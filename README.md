@@ -41,12 +41,12 @@ You can configure the number of laps to maintain using the `--laps` argument:
 python main.py --laps 10
 ```
 
-If your SimHub is running on a different machine or port, use the `--url` argument:
+If your SimHub is configured to forward to a different port, use the `--port` argument:
 ```bash
-python main.py --url ws://192.168.1.10:8888/ws
+python main.py --port 20778
 ```
 
 ## How it works
-The application connects to the SimHub WebSocket API to receive live telemetry updates. It uses `PyQtGraph` for efficient real-time plotting, which is much faster than standard Matplotlib for high-frequency data. 
+The application listens for raw F1 25 binary telemetry packets forwarded by SimHub via UDP. It uses `PyQtGraph` for efficient real-time plotting.
 
-The X-axis is based on `DistanceRoundTrack`, allowing for perfect alignment of telemetry across different laps regardless of time variations.
+The X-axis is based on `m_lapDistance`, allowing for perfect alignment of telemetry across different laps regardless of time variations.
