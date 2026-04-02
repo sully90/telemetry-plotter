@@ -1,6 +1,8 @@
 # SimHub Real-Time Telemetry Plotter
 
-A Python-based real-time telemetry plotter for SimHub. It displays speed, throttle, and brake data lap-by-lap, maintaining a history of previous laps with a fading effect.
+A Python-based real-time telemetry plotter for F1 25. It displays speed, pedal inputs, and time delta vs your best lap, maintaining a history of previous laps with a fading effect.
+
+![Example Screenshot](example.png)
 
 ## Features
 - **Real-time Plotting**: High-performance visualization using `pyqtgraph`.
