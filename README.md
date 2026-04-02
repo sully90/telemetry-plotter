@@ -1,15 +1,23 @@
-# SimHub Real-Time Telemetry Plotter
+# F1 25 Real-Time Telemetry Plotter
 
-A Python-based real-time telemetry plotter for F1 25. It displays speed, pedal inputs, and time delta vs your best lap, maintaining a history of previous laps with a fading effect.
+A Python-based real-time telemetry plotter for F1 25. It displays speed, pedal inputs, time delta vs your best lap, tyre wear, and ERS energy, maintaining a history of previous laps with a fading effect.
 
 ![Example Screenshot](example.png)
 
 ## Features
 - **Real-time Plotting**: High-performance visualization using `pyqtgraph`.
+- **Dual Modes**: 
+  - **Time Trial Mode**: Focuses on delta-time and comparison against your best lap.
+  - **Race Mode**: Shows live telemetry for you and all 21 opponents (opponents shown with low alpha and team colors).
+- **AI-Ready Recording**: Record full-grid telemetry to JSON files with built-in metadata for AI analysis and coaching.
 - **Lap-by-Lap History**: Automatically detects new laps and stores the previous ones.
 - **Configurable History**: Control how many previous laps are displayed.
 - **Fading Effect**: Older laps gradually fade out, making it easy to compare your current performance against recent ones.
-- **Cross-Sim Support**: Works with any game supported by SimHub (F1 24, Assetto Corsa, etc.).
+
+## Keybindings
+- **`T`**: Toggle **Tyre Wear** plot.
+- **`E`**: Toggle **Energy (ERS)** plot.
+- **`R`**: Toggle **Recording** to file (saved in `recordings/` folder).
 
 ## Prerequisites
 1. **SimHub**: Must be installed and running.
@@ -50,3 +58,5 @@ python main.py --port 20778
 The application listens for raw F1 25 binary telemetry packets forwarded by SimHub via UDP. It uses `PyQtGraph` for efficient real-time plotting.
 
 The X-axis is based on `m_lapDistance`, allowing for perfect alignment of telemetry across different laps regardless of time variations.
+
+Recorded JSON files include a metadata header describing the units and schema, making them easy to feed into AI models for automated driving analysis and coaching.
