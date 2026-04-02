@@ -13,7 +13,7 @@ A Python-based real-time telemetry plotter for F1 25. It displays speed, pedal i
 
 ## Prerequisites
 1. **SimHub**: Must be installed and running.
-2. **SimHub Web Server**: Ensure the Web Server is enabled in SimHub settings (default port 8888).
+2. **UDP Forwarding**: Ensure SimHub is configured to forward UDP telemetry to `127.0.0.1` on port `20778`.
 3. **Python 3.7+**: Make sure Python is installed on your system.
 
 ## Installation
