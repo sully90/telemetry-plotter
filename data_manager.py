@@ -28,7 +28,7 @@ SESSION_TIME_TRIAL = [18]
 class TelemetryData:
     def __init__(self, max_laps=5):
         self.max_laps = max_laps
-        self.laps = deque(maxlen=max_laps)
+        self.car_histories = {i: deque(maxlen=max_laps) for i in range(22)}
         self.player_idx = 0
         self.pb_car_idx = 255
         self.rival_car_idx = 255
@@ -57,10 +57,15 @@ class TelemetryData:
         self.is_recording = False
         self.recording_log = []
         self.recording_filename = ""
-        self.lock = threading.Lock()
+        self.marker_dist = None
+        self.lock = threading.RLock()
 
     def _new_lap_dict(self):
-        return {"distance": [], "speed": [], "rpm": [], "throttle": [], "brake": [], "time": [], "tyre_wear": [], "ers_store": []}
+        return {
+            "distance": [], "speed": [], "rpm": [], "throttle": [], 
+            "brake": [], "time": [], "tyre_wear": [], "ers_store": [],
+            "pos_x": [], "pos_z": []
+        }
 
     def toggle_recording(self):
         with self.lock:
@@ -86,7 +91,7 @@ class TelemetryData:
             if new_track != self.track_name or session_type != self.session_type:
                 self.track_name = new_track
                 self.session_type = session_type
-                self.laps.clear()
+                for h in self.car_histories.values(): h.clear()
                 self.best_lap_data = None
                 self.best_lap_time = float('inf')
                 self.all_cars_data = {i: self._new_lap_dict() for i in range(22)}
@@ -98,6 +103,10 @@ class TelemetryData:
                 print(f"TT: PlayerIdx={self.player_idx}, PBIdx={pb_idx}, RivalIdx={rival_idx}")
             self.pb_car_idx = pb_idx
             self.rival_car_idx = rival_idx
+
+    def set_marker(self, dist):
+        with self.lock:
+            self.marker_dist = dist
 
     def update_participants(self, participants):
         with self.lock:
@@ -117,7 +126,7 @@ class TelemetryData:
             if car_idx < 22:
                 latch = self.car_latches[car_idx]
                 
-                # 1. Calculate speed from world position delta (most reliable for ghosts)
+                # 1. Calculate speed from world position delta
                 speed_mph = latch["speed_mph"]
                 if latch["world_x"] is not None and session_time > latch["last_motion_time"]:
                     dt = session_time - latch["last_motion_time"]
@@ -134,10 +143,8 @@ class TelemetryData:
                 # 2. Record high-resolution data point
                 if frame_id != latch["last_frame_id"] and latch["last_lap_data_time"] > 0:
                     data = self.all_cars_data[car_idx]
-                    # Use spline-aligned interpolated distance
                     current_dist = latch["last_lap_distance"] + latch["dist_since_last_lap"]
                     
-                    # Only record if distance is valid and moving forward
                     if current_dist >= 0 and (not data["distance"] or current_dist > data["distance"][-1]):
                         data["distance"].append(current_dist)
                         data["speed"].append(speed_mph)
@@ -147,6 +154,8 @@ class TelemetryData:
                         data["brake"].append(latch["brake"])
                         data["tyre_wear"].append(latch["tyre"])
                         data["ers_store"].append(latch["ers"])
+                        data["pos_x"].append(x)
+                        data["pos_z"].append(z)
                     
                     latch["last_frame_id"] = frame_id
 
@@ -156,30 +165,36 @@ class TelemetryData:
             if car_idx >= 22: return
             latch = self.car_latches[car_idx]
             
-            # Detect new lap
-            if distance < latch["last_dist"] - 100 or (latch["last_lap"] != -1 and lap_num < latch["last_lap"]):
-                self.all_cars_data[car_idx] = self._new_lap_dict()
-                if car_idx == self.player_idx: self.current_lap_data = self.all_cars_data[car_idx]
-                latch["dist_since_last_lap"] = 0
+            # Detect Lap Completion vs Session/Lap Reset
+            if latch["last_lap"] != -1:
+                if lap_num > latch["last_lap"]:
+                    # NORMAL LAP COMPLETION
+                    old_data = self.all_cars_data[car_idx]
+                    if len(old_data["distance"]) > 100:
+                        lap_time = old_data["time"][-1] - old_data["time"][0] if len(old_data["time"]) > 1 else float('inf')
+                        if car_idx == self.player_idx:
+                            if lap_time < self.best_lap_time:
+                                self.best_lap_time = lap_time
+                                self.best_lap_data = {k: list(v) for k, v in old_data.items()}
+                        
+                        self.car_histories[car_idx].append({k: list(v) for k, v in old_data.items()})
+                    
+                    # Reset current lap
+                    self.all_cars_data[car_idx] = self._new_lap_dict()
+                    if car_idx == self.player_idx: self.current_lap_data = self.all_cars_data[car_idx]
+                    latch["dist_since_last_lap"] = 0
 
-            # Store lap for history if it was a complete lap (for player only)
-            if car_idx == self.player_idx and latch["last_lap"] != -1 and lap_num > latch["last_lap"]:
-                old_data = self.all_cars_data[car_idx]
-                lap_time = old_data["time"][-1] - old_data["time"][0] if len(old_data["time"]) > 1 else float('inf')
-                if len(old_data["distance"]) > 100:
-                    if lap_time < self.best_lap_time:
-                        self.best_lap_time = lap_time
-                        self.best_lap_data = {k: list(v) for k, v in old_data.items()}
-                    self.laps.append({k: list(v) for k, v in old_data.items()})
-                self.all_cars_data[car_idx] = self._new_lap_dict()
-                self.current_lap_data = self.all_cars_data[car_idx]
-                latch["dist_since_last_lap"] = 0
+                elif lap_num < latch["last_lap"] or distance < latch["last_dist"] - 500:
+                    # RESET / FLASHBACK (Major jump backwards)
+                    self.all_cars_data[car_idx] = self._new_lap_dict()
+                    if car_idx == self.player_idx: self.current_lap_data = self.all_cars_data[car_idx]
+                    latch["dist_since_last_lap"] = 0
 
             latch["last_dist"] = distance
             latch["last_lap"] = lap_num
             latch["last_lap_distance"] = distance
             latch["last_lap_data_time"] = session_time
-            latch["dist_since_last_lap"] = 0 # Reset accumulation at each LapData sync
+            latch["dist_since_last_lap"] = 0
             
             if car_idx == self.player_idx: self.current_lap_num = lap_num
 
