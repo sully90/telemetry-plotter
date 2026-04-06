@@ -3,6 +3,38 @@ from PyQt5 import QtWidgets, QtCore, QtGui
 import pyqtgraph as pg
 from .data_manager import TEAM_COLORS, SESSION_RACE, SESSION_TIME_TRIAL
 
+from datetime import datetime
+
+def take_screenshot():
+    """Captures all visible top-level windows and saves them to a single image."""
+    app = QtWidgets.QApplication.instance()
+    windows = [w for w in app.topLevelWidgets() if w.isVisible() and isinstance(w, QtWidgets.QMainWindow)]
+    if not windows:
+        return
+
+    # Determine the bounding rectangle of all windows
+    min_x = min(w.x() for w in windows)
+    min_y = min(w.y() for w in windows)
+    max_x = max(w.x() + w.width() for w in windows)
+    max_y = max(w.y() + w.height() for w in windows)
+
+    # Create a transparent pixmap covering the whole area
+    full_pixmap = QtGui.QPixmap(max_x - min_x, max_y - min_y)
+    full_pixmap.fill(QtCore.Qt.black) # Use black background for consistency
+
+    painter = QtGui.QPainter(full_pixmap)
+    for w in windows:
+        # Render each window at its relative position
+        pix = w.grab()
+        painter.drawPixmap(w.x() - min_x, w.y() - min_y, pix)
+    painter.end()
+
+    # Save to file
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"screenshot_{timestamp}.png"
+    if full_pixmap.save(filename):
+        print(f"Screenshot saved to {filename}")
+
 class RecordingIndicator(QtWidgets.QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -73,6 +105,8 @@ class TrackMapWindow(QtWidgets.QMainWindow):
     def keyPressEvent(self, event):
         if event.key() == QtCore.Qt.Key_Q:
             QtWidgets.QApplication.instance().quit()
+        elif event.key() == QtCore.Qt.Key_S:
+            take_screenshot()
         elif event.key() == QtCore.Qt.Key_Space:
             with self.telemetry_data.lock: self.telemetry_data.marker_dist = None
             self.auto_track = True
@@ -298,6 +332,8 @@ class SteeringWheelWindow(QtWidgets.QMainWindow):
     def keyPressEvent(self, event):
         if event.key() == QtCore.Qt.Key_Q:
             QtWidgets.QApplication.instance().quit()
+        elif event.key() == QtCore.Qt.Key_S:
+            take_screenshot()
         super().keyPressEvent(event)
 
 class PlotterWindow(QtWidgets.QMainWindow):
@@ -407,6 +443,8 @@ class PlotterWindow(QtWidgets.QMainWindow):
     def keyPressEvent(self, event):
         if event.key() == QtCore.Qt.Key_Q:
             QtWidgets.QApplication.instance().quit()
+        elif event.key() == QtCore.Qt.Key_S:
+            take_screenshot()
         elif event.key() == QtCore.Qt.Key_Space:
             with self.telemetry_data.lock: self.telemetry_data.marker_dist = None
             self.reset_zoom()

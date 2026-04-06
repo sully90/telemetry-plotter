@@ -2,7 +2,7 @@
 
 A Python-based real-time telemetry plotter for F1 25. It provides high-frequency visualization of speed, pedal inputs, time deltas, and racing lines across dual windows, optimized for multi-monitor setups.
 
-![Example Screenshot](example.png)
+![Example Screenshot](screenshot_20260406_133551.png)
 
 ## Features
 - **High-Resolution Telemetry**: Uses **World Position (X, Y, Z)** interpolation to provide smooth 60Hz telemetry data, even for Time Trial ghosts which the game usually restricted to ~1Hz.
@@ -24,6 +24,7 @@ All keys work globally across both windows:
 - **`T`**: Toggle **Tyre Wear** plot.
 - **`E`**: Toggle **Energy (ERS)** plot.
 - **`R`**: Toggle **Recording** to file (saved in `recordings/` folder).
+- **`S`**: Take a composite **Screenshot** of all open windows.
 - **`Q`**: Quit the application.
 
 ## Prerequisites
