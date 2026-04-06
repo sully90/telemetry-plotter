@@ -45,10 +45,23 @@ All keys work globally across both windows:
 
 ## Usage
 
-Run the application:
+### Real-Time Plotter
+Run the application to listen for live UDP data:
 ```bash
 uv run telemetry
 ```
+
+### Playback Mode
+Review previously recorded sessions with full interactivity:
+```bash
+uv run telemetry-playback recordings/your_recording.parquet
+```
+
+#### Playback Controls:
+- **Play/Pause**: Toggle playback using the button in the controls window.
+- **Seek Slider**: Drag the slider to jump to any point in the recording.
+- **Time Display**: Shows current playback time vs. total recording duration.
+- **Interactive Sync**: All real-time features (Middle-click markers, synchronized zoom, fading history) work exactly as they do during live sessions.
 
 ### Configuration Options
 - `--laps [N]`: Number of previous laps to maintain in history (default: 5).
