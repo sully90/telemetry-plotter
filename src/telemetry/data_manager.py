@@ -7,13 +7,13 @@ TRACK_MAP = {
     4: "Catalunya", 5: "Monaco", 6: "Montreal", 7: "Silverstone",
     8: "Hockenheim", 9: "Hungaroring", 10: "Spa", 11: "Monza",
     12: "Singapore", 13: "Suzuka", 14: "Abu Dhabi", 15: "Texas",
-    16: "Shanghai", 17: "Interlagos", 18: "Yas Marina", 19: "Austin",
-    20: "Mexico City", 21: "Spielberg", 22: "Sakhir Short", 
-    23: "Silverstone Short", 24: "Texas Short", 25: "Suzuka Short",
-    26: "Hanoi", 27: "Zandvoort", 28: "Imola", 29: "Portimão",
-    30: "Jeddah", 31: "Miami", 32: "Las Vegas", 33: "Losail"
+    16: "Brazil", 17: "Austria", 18: "Sochi", 19: "Mexico City",
+    20: "Baku", 21: "Sakhir Short", 22: "Silverstone Short", 
+    23: "Texas Short", 24: "Suzuka Short", 25: "Hanoi", 
+    26: "Zandvoort", 27: "Imola", 28: "Portimão", 29: "Jeddah", 
+    30: "Miami", 31: "Las Vegas", 32: "Losail",
+    33: "Silverstone Reverse", 34: "Austria Reverse", 35: "Zandvoort Reverse"
 }
-
 TEAM_COLORS = {
     0: (39, 244, 210), 1: (232, 0, 32), 2: (54, 113, 198), 3: (100, 196, 255),
     4: (34, 153, 113), 5: (0, 147, 204), 6: (102, 146, 255), 7: (182, 186, 189),
@@ -21,7 +21,7 @@ TEAM_COLORS = {
 }
 
 SESSION_RACE = [15, 16, 17]
-SESSION_TIME_TRIAL = [18]
+SESSION_TIME_TRIAL = [10, 11, 12, 13, 14, 18] # Including Sprint Shootouts which act like TT
 
 class TelemetryData:
     def __init__(self, max_laps=5):
@@ -45,6 +45,7 @@ class TelemetryData:
             "last_motion_time": 0.0,
             "last_lap_distance": 0.0,
             "last_lap_data_time": 0.0,
+            "last_lap_time": 0.0,
             "dist_since_last_lap": 0.0,
             "last_frame_id": -1
         } for i in range(22)}
@@ -52,6 +53,8 @@ class TelemetryData:
         self.current_lap_data = self.all_cars_data[0]
         self.best_lap_data = None
         self.best_lap_time = float('inf')
+        self.car_best_laps = {} # car_idx -> lap_data
+        self.car_best_times = {} # car_idx -> best_time
         self.recorder = TelemetryRecorder()
         self.marker_dist = None
         self.lock = threading.RLock()
@@ -59,7 +62,7 @@ class TelemetryData:
     def _new_lap_dict(self):
         return {
             "distance": [], "speed": [], "rpm": [], "throttle": [], 
-            "brake": [], "steer": [], "time": [], "tyre_wear": [], "ers_store": [],
+            "brake": [], "steer": [], "time": [], "lap_time": [], "tyre_wear": [], "ers_store": [],
             "pos_x": [], "pos_z": []
         }
 
@@ -100,7 +103,6 @@ class TelemetryData:
                 print(f"TT: PlayerIdx={self.player_idx}, PBIdx={pb_idx}, RivalIdx={rival_idx}")
             self.pb_car_idx = pb_idx
             self.rival_car_idx = rival_idx
-            # Ensure the plotter knows who the current rival is for delta calculations
             if rival_idx != 255:
                 self.current_lap_data = self.all_cars_data[self.player_idx]
 
@@ -153,10 +155,15 @@ class TelemetryData:
                     data = self.all_cars_data[car_idx]
                     current_dist = latch["last_lap_distance"] + latch["dist_since_last_lap"]
                     
+                    # Estimate current lap time based on last LAP packet + time since then
+                    dt_since_lap_packet = session_time - latch["last_lap_data_time"]
+                    curr_lap_time = latch["last_lap_time"] + dt_since_lap_packet
+
                     if current_dist >= 0 and (not data["distance"] or current_dist > data["distance"][-1]):
                         data["distance"].append(current_dist)
                         data["speed"].append(speed_mph)
                         data["time"].append(session_time)
+                        data["lap_time"].append(curr_lap_time)
                         data["rpm"].append(latch["rpm"])
                         data["throttle"].append(latch["throttle"])
                         data["brake"].append(latch["brake"])
@@ -168,6 +175,9 @@ class TelemetryData:
                     
                     self.recorder.add_sample({
                         "car_idx": car_idx,
+                        "session_type": self.session_type,
+                        "rival_car_idx": self.rival_car_idx,
+                        "pb_car_idx": self.pb_car_idx,
                         "lap": latch["last_lap"],
                         "distance": current_dist,
                         "speed": speed_mph,
@@ -175,7 +185,10 @@ class TelemetryData:
                         "throttle": latch["throttle"],
                         "brake": latch["brake"],
                         "steer": latch["steer"],
+                        "tyre_wear": latch["tyre"],
+                        "ers_store": latch["ers"],
                         "time": session_time,
+                        "lap_time": curr_lap_time,
                         "pos_x": x,
                         "pos_z": z
                     })
@@ -194,11 +207,22 @@ class TelemetryData:
                     # NORMAL LAP COMPLETION
                     old_data = self.all_cars_data[car_idx]
                     if len(old_data["distance"]) > 100:
-                        lap_time = old_data["time"][-1] - old_data["time"][0] if len(old_data["time"]) > 1 else float('inf')
-                        if car_idx == self.player_idx:
-                            if lap_time < self.best_lap_time:
+                        # Prefer absolute lap_time if available
+                        if old_data["lap_time"]:
+                            lap_time = old_data["lap_time"][-1] - old_data["lap_time"][0]
+                        else:
+                            lap_time = old_data["time"][-1] - old_data["time"][0] if len(old_data["time"]) > 1 else float('inf')
+                        
+                        # Update best lap for this specific car
+                        current_best = self.car_best_times.get(car_idx, float('inf'))
+                        if lap_time < current_best:
+                            self.car_best_times[car_idx] = lap_time
+                            self.car_best_laps[car_idx] = {k: list(v) for k, v in old_data.items()}
+                            
+                            # Keep player-specific best in sync
+                            if car_idx == self.player_idx:
                                 self.best_lap_time = lap_time
-                                self.best_lap_data = {k: list(v) for k, v in old_data.items()}
+                                self.best_lap_data = self.car_best_laps[car_idx]
                         
                         self.car_histories[car_idx].append({k: list(v) for k, v in old_data.items()})
                     
@@ -217,6 +241,7 @@ class TelemetryData:
             latch["last_lap"] = lap_num
             latch["last_lap_distance"] = distance
             latch["last_lap_data_time"] = session_time
+            latch["last_lap_time"] = time_ms / 1000.0
             latch["dist_since_last_lap"] = 0
             
             if car_idx == self.player_idx: self.current_lap_num = lap_num

@@ -74,14 +74,8 @@ class TrackMapWindow(QtWidgets.QMainWindow):
         self.track_fitted = False
         self.current_track_name = ""
         self.map_bounds = [float('inf'), float('-inf'), float('inf'), float('-inf')] # min_x, max_x, min_z, max_z
+        self.last_car_pos = {} # For performance optimization
         self.p_map.vb.sigRangeChangedManually.connect(self._on_manual_interaction)
-
-        # Delta line visualization
-        self.show_delta_line = False
-        self.delta_line_segments = []
-        self.last_delta_idx = 0
-        self.last_ref_lap_id = None
-        self.last_player_lap_num = -1
 
         # History curves for all cars
         self.history_curves = {i: [] for i in range(22)}
@@ -126,16 +120,6 @@ class TrackMapWindow(QtWidgets.QMainWindow):
             self.request_toggle_ers.emit()
         elif event.key() == QtCore.Qt.Key_T:
             self.request_toggle_tyre_wear.emit()
-        elif event.key() == QtCore.Qt.Key_D:
-            self.show_delta_line = not self.show_delta_line
-            if not self.show_delta_line:
-                for seg in self.delta_line_segments:
-                    self.p_map.removeItem(seg)
-                self.delta_line_segments = []
-                self.last_delta_idx = 0
-                self.curr_curve.show()
-            else:
-                self.curr_curve.hide()
         super().keyPressEvent(event)
 
     def mousePressEvent(self, event):
@@ -191,6 +175,7 @@ class TrackMapWindow(QtWidgets.QMainWindow):
             # Reset discovery if track changes
             if self.current_track_name != track_name:
                 self.map_bounds = [float('inf'), float('-inf'), float('inf'), float('-inf')]
+                self.last_car_pos = {}
             self.current_track_name = track_name
 
             self.rec_indicator.setVisible(is_recording)
@@ -230,7 +215,13 @@ class TrackMapWindow(QtWidgets.QMainWindow):
                     continue
                 
                 car_data = self.telemetry_data.all_cars_data[i]
-                if car_data["pos_x"]:
+                n = len(car_data["pos_x"])
+                if n > 0:
+                    # Skip update if no new data points
+                    if i in self.last_car_pos and self.last_car_pos[i] == n:
+                        continue
+                    self.last_car_pos[i] = n
+
                     team_id = self.telemetry_data.all_cars_team_ids[i]
                     color = TEAM_COLORS.get(team_id, (150, 150, 150))
                     alpha = 150 if (i == rival_idx and is_tt) else 60
@@ -244,12 +235,13 @@ class TrackMapWindow(QtWidgets.QMainWindow):
 
             # Update Player Current Lap
             player_data = self.telemetry_data.all_cars_data[player_idx]
-            if player_data["pos_x"]:
-                if not self.show_delta_line:
+            n_player = len(player_data["pos_x"])
+            if n_player > 0:
+                # Skip update if no new data
+                if player_idx not in self.last_car_pos or self.last_car_pos[player_idx] != n_player:
                     self.curr_curve.setData(player_data["pos_x"], player_data["pos_z"])
-                    self.curr_curve.show()
-                else:
-                    self.curr_curve.hide()
+                    self.last_car_pos[player_idx] = n_player
+                self.curr_curve.show()
             else:
                 self.curr_curve.hide()
 
@@ -287,82 +279,6 @@ class TrackMapWindow(QtWidgets.QMainWindow):
             # Update shared marker
             marker_dist = self.telemetry_data.marker_dist
             
-            # --- Delta Line Logic ---
-            if self.show_delta_line:
-                # Find rival data
-                ref_lap = None
-                if is_tt and rival_idx != 255: ref_lap = self.telemetry_data.all_cars_data[rival_idx]
-                else: ref_lap = self.telemetry_data.best_lap_data
-                
-                # Check if reference lap or current player lap changed
-                ref_lap_id = id(ref_lap) if ref_lap else None
-                curr_lap_num = self.telemetry_data.current_lap_num
-                
-                if ref_lap_id != self.last_ref_lap_id or curr_lap_num != self.last_player_lap_num:
-                    for seg in self.delta_line_segments: self.p_map.removeItem(seg)
-                    self.delta_line_segments = []
-                    self.last_delta_idx = 0
-                    self.last_ref_lap_id = ref_lap_id
-                    self.last_player_lap_num = curr_lap_num
-
-                if ref_lap and player_data["distance"] and len(player_data["distance"]) > 10 and len(ref_lap["distance"]) > 10:
-                    try:
-                        p_dist = np.array(player_data["distance"])
-                        p_time = np.array(player_data["time"])
-                        p_x = np.array(player_data["pos_x"])
-                        p_z = np.array(player_data["pos_z"])
-                        
-                        r_dist = np.array(ref_lap["distance"])
-                        r_time = np.array(ref_lap["time"])
-                        
-                        p_time_rel = p_time - p_time[0]
-                        r_time_rel = r_time - r_time[0]
-                        
-                        # Calculate all deltas for normalization over the entire available lap
-                        # This works perfectly for playback where the full lap is pre-loaded
-                        all_r_time_interp = np.interp(p_dist, r_dist, r_time_rel)
-                        all_deltas_abs = np.abs(p_time_rel - all_r_time_interp)
-                        max_abs = np.max(all_deltas_abs)
-                        min_abs = np.min(all_deltas_abs)
-                        abs_range = max_abs - min_abs
-                        if abs_range < 0.001: abs_range = 1.0
-
-                        # Find the index in player_data corresponding to current playback distance
-                        target_dist = self.telemetry_data.marker_dist if self.telemetry_data.marker_dist is not None else 0
-                        n_points = len(p_dist)
-                        max_idx = np.searchsorted(p_dist, target_dist)
-                        
-                        # Incremental draw
-                        step = 10 
-                        while self.last_delta_idx + step < max_idx and self.last_delta_idx + step < n_points:
-                            i = self.last_delta_idx
-                            
-                            # Sanity Check: If positions jump too far, skip this segment (lap start/end or glitch)
-                            dist_sq = (p_x[i+step] - p_x[i])**2 + (p_z[i+step] - p_z[i])**2
-                            if dist_sq > 100**2: 
-                                self.last_delta_idx += step
-                                continue
-
-                            # Interpolate rival's relative time at player's distances for this segment
-                            p_dist_seg = p_dist[i:i+step+1]
-                            r_time_interp = np.interp(p_dist_seg, r_dist, r_time_rel)
-                            deltas = p_time_rel[i:i+step+1] - r_time_interp
-                            
-                            avg_delta = np.mean(deltas)
-                            color = (0, 255, 0) if avg_delta < 0 else (255, 0, 0)
-                            
-                            # Normalized thickness: 2 to 10 based on lap min/max magnitude
-                            norm_val = (abs(avg_delta) - min_abs) / abs_range
-                            thickness = 2 + int(norm_val * 8)
-                            
-                            seg = self.p_map.plot(p_x[i:i+step+1], p_z[i:i+step+1], 
-                                                 pen=pg.mkPen(color, width=thickness))
-                            seg.setZValue(150) # Above other lines
-                            self.delta_line_segments.append(seg)
-                            self.last_delta_idx += step
-                    except Exception as e:
-                        print(f"Error calculating delta line: {e}")
-
             if marker_dist is not None:
                 self.auto_track = False
                 if player_data["distance"]:
@@ -455,8 +371,6 @@ class PlotterWindow(QtWidgets.QMainWindow):
         # Create subplots
         self.p_speed = self.win.addPlot(title="Speed (mph)")
         self.win.nextRow()
-        self.p_delta = self.win.addPlot(title="Time Delta vs Reference (seconds)")
-        self.win.nextRow()
         self.p_throttle = self.win.addPlot(title="Pedals (Throttle/Brake %)")
         self.win.nextRow()
         self.p_tyre = self.win.addPlot(title="Max Tyre Wear (%)")
@@ -465,7 +379,7 @@ class PlotterWindow(QtWidgets.QMainWindow):
         self.p_ers.setYRange(0, 100)
 
         # Link X-axes
-        self.p_delta.setXLink(self.p_speed); self.p_throttle.setXLink(self.p_speed)
+        self.p_throttle.setXLink(self.p_speed)
         self.p_tyre.setXLink(self.p_speed); self.p_ers.setXLink(self.p_speed)
 
         # Sync zoom to Map
@@ -500,10 +414,6 @@ class PlotterWindow(QtWidgets.QMainWindow):
         self.rival_throttle_curve = self.p_throttle.plot(pen=pg.mkPen((200, 0, 255), width=1, style=QtCore.Qt.DashLine)); self.rival_throttle_curve.setZValue(51)
         self.rival_brake_curve = self.p_throttle.plot(pen=pg.mkPen((200, 0, 255), width=1, style=QtCore.Qt.DashLine)); self.rival_brake_curve.setZValue(51)
 
-        # Delta
-        self.delta_curve = self.p_delta.plot(pen=pg.mkPen('y', width=2))
-        self.p_delta.addLine(y=0, pen=pg.mkPen('w', style=QtCore.Qt.DotLine))
-
         # Current Lap (Solid)
         self.curr_speed_curve = self.p_speed.plot(pen=pg.mkPen('w', width=3)); self.curr_speed_curve.setZValue(100)
         self.curr_throttle_curve = self.p_throttle.plot(pen=pg.mkPen('g', width=3)); self.curr_throttle_curve.setZValue(100)
@@ -513,15 +423,25 @@ class PlotterWindow(QtWidgets.QMainWindow):
 
         # Shared Marker (Vertical Yellow lines)
         self.marker_lines = []
-        for p in [self.p_speed, self.p_delta, self.p_throttle, self.p_tyre, self.p_ers]:
+        for p in [self.p_speed, self.p_throttle, self.p_tyre, self.p_ers]:
             line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('y', width=1, style=QtCore.Qt.DashLine))
             line.setZValue(200)
             p.addItem(line)
             self.marker_lines.append(line)
 
+        # Performance optimization
+        self.last_data_lens = {i: 0 for i in range(22)}
+        self.pen_cache = {}
+
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.update_plots)
         self.timer.start(50)
+
+    def _get_cached_pen(self, color, alpha=255, width=1):
+        key = (*color, alpha, width)
+        if key not in self.pen_cache:
+            self.pen_cache[key] = pg.mkPen((*color, alpha), width=width)
+        return self.pen_cache[key]
 
     def toggle_tyre_wear(self):
         self.show_tyre_wear = not self.show_tyre_wear
@@ -564,7 +484,7 @@ class PlotterWindow(QtWidgets.QMainWindow):
                 pos = event.pos()
                 scene_pos = self.win.mapToScene(pos)
                 # Find which plot was clicked
-                for p in [self.p_speed, self.p_delta, self.p_throttle, self.p_tyre, self.p_ers]:
+                for p in [self.p_speed, self.p_throttle, self.p_tyre, self.p_ers]:
                     if p.sceneBoundingRect().contains(scene_pos):
                         view_pos = p.vb.mapSceneToView(scene_pos)
                         self.marker_clicked.emit(view_pos.x())
@@ -593,33 +513,46 @@ class PlotterWindow(QtWidgets.QMainWindow):
             # Update Opponents / Rival Ghost
             for i in range(22):
                 car_data = self.telemetry_data.all_cars_data[i]
-                if i == player_idx or not car_data["distance"]:
+                n = len(car_data["distance"])
+                
+                if i == player_idx or n == 0:
                     self.opp_speed_curves[i].hide(); self.opp_throttle_curves[i].hide()
                     self.opp_brake_curves[i].hide(); self.opp_tyre_curves[i].hide(); self.opp_ers_curves[i].hide()
                     if i == rival_idx: 
                         self.rival_speed_curve.hide(); self.rival_throttle_curve.hide(); self.rival_brake_curve.hide()
+                    self.last_data_lens[i] = 0
                     continue
+                
+                # Only update if data has grown (prevents jitter)
+                if n == self.last_data_lens[i]:
+                    continue
+                self.last_data_lens[i] = n
                 
                 # Special handling for Rival Ghost in TT
                 if is_tt and i == rival_idx:
-                    n = min(len(car_data["distance"]), len(car_data["speed"]))
-                    self.rival_speed_curve.setData(car_data["distance"][:n], car_data["speed"][:n]); self.rival_speed_curve.show()
-                    self.rival_throttle_curve.setData(car_data["distance"][:n], car_data["throttle"][:n]); self.rival_throttle_curve.show()
-                    self.rival_brake_curve.setData(car_data["distance"][:n], car_data["brake"][:n]); self.rival_brake_curve.show()
+                    ns = min(n, len(car_data["speed"]))
+                    self.rival_speed_curve.setData(car_data["distance"][:ns], car_data["speed"][:ns]); self.rival_speed_curve.show()
+                    self.rival_throttle_curve.setData(car_data["distance"][:ns], car_data["throttle"][:ns]); self.rival_throttle_curve.show()
+                    self.rival_brake_curve.setData(car_data["distance"][:ns], car_data["brake"][:ns]); self.rival_brake_curve.show()
                     self.opp_speed_curves[i].hide() # Don't show faint opponent curve for rival
-                elif is_race:
+                elif is_race or (not is_tt and car_data["distance"]):
+                    # Show as regular opponent if in race or if we have data in practice
                     team_id = self.telemetry_data.all_cars_team_ids[i]
                     color = TEAM_COLORS.get(team_id, (150, 150, 150))
-                    n = min(len(car_data["distance"]), len(car_data["speed"]), len(car_data["throttle"]), len(car_data["brake"]))
-                    self.opp_speed_curves[i].setPen(pg.mkPen((*color, 80), width=1)); self.opp_speed_curves[i].setData(car_data["distance"][:n], car_data["speed"][:n]); self.opp_speed_curves[i].show()
-                    self.opp_throttle_curves[i].setPen(pg.mkPen((*color, 80), width=1)); self.opp_throttle_curves[i].setData(car_data["distance"][:n], car_data["throttle"][:n]); self.opp_throttle_curves[i].show()
-                    self.opp_brake_curves[i].setPen(pg.mkPen((*color, 80), width=1)); self.opp_brake_curves[i].setData(car_data["distance"][:n], car_data["brake"][:n]); self.opp_brake_curves[i].show()
+                    # If it's not a race, make it even fainter
+                    alpha = 80 if is_race else 40
+                    pen = self._get_cached_pen(color, alpha)
+                    
+                    ns = min(n, len(car_data["speed"]), len(car_data["throttle"]), len(car_data["brake"]))
+                    self.opp_speed_curves[i].setPen(pen); self.opp_speed_curves[i].setData(car_data["distance"][:ns], car_data["speed"][:ns]); self.opp_speed_curves[i].show()
+                    self.opp_throttle_curves[i].setPen(pen); self.opp_throttle_curves[i].setData(car_data["distance"][:ns], car_data["throttle"][:ns]); self.opp_throttle_curves[i].show()
+                    self.opp_brake_curves[i].setPen(pen); self.opp_brake_curves[i].setData(car_data["distance"][:ns], car_data["brake"][:ns]); self.opp_brake_curves[i].show()
                     if self.show_tyre_wear and car_data["tyre_wear"]:
-                        nt = min(len(car_data["distance"]), len(car_data["tyre_wear"]))
-                        self.opp_tyre_curves[i].setPen(pg.mkPen((*color, 80), width=1)); self.opp_tyre_curves[i].setData(car_data["distance"][:nt], car_data["tyre_wear"][:nt]); self.opp_tyre_curves[i].show()
+                        nt = min(n, len(car_data["tyre_wear"]))
+                        self.opp_tyre_curves[i].setPen(pen); self.opp_tyre_curves[i].setData(car_data["distance"][:nt], car_data["tyre_wear"][:nt]); self.opp_tyre_curves[i].show()
                     if self.show_ers and car_data["ers_store"]:
-                        ne = min(len(car_data["distance"]), len(car_data["ers_store"]))
-                        self.opp_ers_curves[i].setPen(pg.mkPen((*color, 80), width=1)); self.opp_ers_curves[i].setData(car_data["distance"][:ne], car_data["ers_store"][:ne]); self.opp_ers_curves[i].show()
+                        ne = min(n, len(car_data["ers_store"]))
+                        self.opp_ers_curves[i].setPen(pen); self.opp_ers_curves[i].setData(car_data["distance"][:ne], car_data["ers_store"][:ne]); self.opp_ers_curves[i].show()
                 else:
                     self.opp_speed_curves[i].hide()
 
@@ -639,36 +572,24 @@ class PlotterWindow(QtWidgets.QMainWindow):
             else:
                 self.best_speed_curve.hide(); self.best_tyre_curve.hide(); self.best_ers_curve.hide()
 
-            # Update Current Lap & Delta
+            # Update Current Lap
             current = self.telemetry_data.current_lap_data
             if current["distance"] and current["speed"]:
                 n = min(len(current["distance"]), len(current["speed"]), len(current["throttle"]), len(current["brake"]), len(current["time"]))
-                curr_dist = np.array(current["distance"][:n]); curr_time = np.array(current["time"][:n])
-                self.curr_speed_curve.setData(curr_dist, current["speed"][:n])
-                self.curr_throttle_curve.setData(curr_dist, current["throttle"][:n])
-                self.curr_brake_curve.setData(curr_dist, current["brake"][:n])
-                if self.show_tyre_wear and current["tyre_wear"]:
-                    nt = min(len(current["distance"]), len(current["tyre_wear"])); self.curr_tyre_curve.setData(current["distance"][:nt], current["tyre_wear"][:nt]); self.curr_tyre_curve.show()
-                if self.show_ers and current["ers_store"]:
-                    ne = min(len(current["distance"]), len(current["ers_store"])); self.curr_ers_curve.setData(current["distance"][:ne], current["ers_store"][:ne]); self.curr_ers_curve.show()
+                curr_dist_raw = np.array(current["distance"][:n]); curr_time_raw = np.array(current["time"][:n])
                 
-                # Delta logic: Prefer Rival Ghost if in TT and available, otherwise Session Best
-                ref_lap = None
-                if is_tt and rival_idx != 255: ref_lap = self.telemetry_data.all_cars_data[rival_idx]
-                elif is_tt or not is_race: ref_lap = best
+                # Filter out junk/out-lap data (distances < -10m)
+                mask = curr_dist_raw > -10
+                if not np.any(mask): 
+                    return
                 
-                if ref_lap and len(ref_lap["distance"]) > 10:
-                    ref_time = np.array(ref_lap["time"])
-                    ref_time_rel = ref_time - ref_time[0]
-                    curr_time_rel = curr_time - curr_time[0]
-                    
-                    best_time_interp = np.interp(curr_dist, ref_lap["distance"], ref_time_rel)
-                    delta = curr_time_rel - best_time_interp
-                    ref_name = "Rival" if ref_lap == self.telemetry_data.all_cars_data.get(rival_idx) else "Best"
-                    self.p_delta.setTitle(f"Time Delta vs {ref_name} (seconds)")
-                    self.delta_curve.setData(curr_dist, delta); self.p_delta.show()
-                else: self.p_delta.hide()
+                curr_dist = curr_dist_raw[mask]
+                n = len(curr_dist)
 
+                self.curr_speed_curve.setData(curr_dist, np.array(current["speed"][:n+len(curr_dist_raw)-n])[mask])
+                self.curr_throttle_curve.setData(curr_dist, np.array(current["throttle"][:n+len(curr_dist_raw)-n])[mask])
+                self.curr_brake_curve.setData(curr_dist, np.array(current["brake"][:n+len(curr_dist_raw)-n])[mask])
+                
             # Update Player History
             laps = list(self.telemetry_data.car_histories[player_idx])
             num_history = len(laps)
