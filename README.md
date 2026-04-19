@@ -1,5 +1,8 @@
 # F1 25 Real-Time Telemetry Plotter
 
+[![Tests](https://github.com/sully90/telemetry/actions/workflows/test.yml/badge.svg)](https://github.com/sully90/telemetry/actions)
+![Python Version](https://img.shields.io/badge/python-3.12+-blue.svg)
+
 A Python-based real-time telemetry plotter for F1 25. It provides high-frequency visualization of speed, pedal inputs, and racing lines across dual windows, optimized for multi-monitor setups.
 
 ![Example Screenshot](screenshot_20260406_133551.png)
